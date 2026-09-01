@@ -1,0 +1,23 @@
+# Shopify App Configuration
+# Learn more: https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "b89ee20ad6819b88155ae7f364c6beed"
+name = "BundleCraft Pro"
+handle = "bundlecraft-pro"
+application_url = "https://bundle-app-one.vercel.app"
+embedded = true
+
+[access_scopes]
+scopes = "read_products,write_products,read_orders,write_draft_orders,read_themes,write_themes"
+
+[auth]
+redirect_urls = [
+  "https://bundle-app-one.vercel.app/api/auth/shopify/callback"
+]
+
+[webhooks]
+api_version = "2024-04"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/api/webhooks/app/uninstalled"

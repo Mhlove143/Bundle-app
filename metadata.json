@@ -1,0 +1,6 @@
+{
+  "name": "Bundlex - Dynamic Shopify Bundle & Volume Builder",
+  "description": "Interactive Shopify bundle builder with dynamic product rendering, tiered volume discounts, and live real-time storefront preview.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

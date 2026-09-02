@@ -287,15 +287,23 @@ app.post('/api/shopify/auto-activate-scripttag', async (req, res) => {
     }
 
     const cleanShop = String(shop).replace(/^https?:\/\//, '').replace(/\/.*$/, '').trim();
-    const token = accessToken || installedShops[cleanShop]?.accessToken;
+    const token = accessToken || installedShops[cleanShop]?.accessToken || process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || process.env.SHOPIFY_API_SECRET;
     const host = process.env.APP_URL || `https://${req.headers.host}`;
     const scriptSrc = `${host}/api/widget/bundlex-auto.js`;
 
     if (!token) {
+      // If store hasn't been through OAuth yet, provide instant OAuth install link
+      const clientId = process.env.SHOPIFY_API_KEY || '';
+      const scopes = process.env.SHOPIFY_SCOPES || 'read_products,write_products,read_orders,write_draft_orders,read_themes,write_themes,write_script_tags';
+      const redirectUri = encodeURIComponent(`${host}/api/auth/shopify/callback`);
+      const oauthUrl = clientId 
+        ? `https://${cleanShop}/admin/oauth/authorize?client_id=${clientId}&scope=${encodeURIComponent(scopes)}&redirect_uri=${redirectUri}`
+        : `/api/auth/shopify?shop=${encodeURIComponent(cleanShop)}`;
+
       return res.status(400).json({
-        error: 'Shopify Access Token is required to automatically register ScriptTag via REST API.',
+        error: `স্টোর (${cleanShop})-এ অ্যাপটির সরাসরি রাইট পারমিশন এখনো নেই। নিচে 'Install & Authorize' বাটনে ১-ক্লিক করে অনুমোদন দিলেই স্বয়ংক্রিয়ভাবে স্ক্রিপ্ট চালু হয়ে যাবে!`,
         requiresAuth: true,
-        authUrl: `/api/auth/shopify?shop=${encodeURIComponent(cleanShop)}`,
+        authUrl: oauthUrl,
         manualScriptUrl: scriptSrc
       });
     }

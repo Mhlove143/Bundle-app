@@ -530,16 +530,26 @@ export const BundlexEditor: React.FC = () => {
             {/* Connect Store Action */}
             <button
               onClick={() => setIsConnectStoreModalOpen(true)}
-              className="hidden sm:flex px-3 py-1.5 bg-[#DEF8EE] hover:bg-[#008060]/20 text-[#008060] rounded-xl text-xs font-bold items-center space-x-1.5 border border-[#008060]/30 transition-all"
+              className="flex px-3 py-1.5 bg-[#DEF8EE] hover:bg-[#008060]/20 text-[#008060] rounded-xl text-xs font-bold items-center space-x-1.5 border border-[#008060]/30 transition-all cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Sync Store</span>
             </button>
 
+            {/* 1-Click No-CLI Live Auto-Install */}
+            <button
+              onClick={() => setIsConnectStoreModalOpen(true)}
+              className="hidden sm:flex px-3 py-1.5 bg-linear-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
+              title="1-Click Auto-inject script tag without Shopify CLI"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-300" />
+              <span>⚡ Auto-Activate (No CLI)</span>
+            </button>
+
             {/* Add Custom Store Product Button */}
             <button
               onClick={() => setIsNewProductModalOpen(true)}
-              className="hidden sm:flex px-3 py-1.5 bg-[#F6F6F7] hover:bg-[#E4E5E7] text-[#202223] rounded-xl text-xs font-semibold items-center space-x-1.5 border border-[#D2D5D8] transition-all"
+              className="hidden sm:flex px-3 py-1.5 bg-[#F6F6F7] hover:bg-[#E4E5E7] text-[#202223] rounded-xl text-xs font-semibold items-center space-x-1.5 border border-[#D2D5D8] transition-all cursor-pointer"
               title="Add a new product to store catalogue"
             >
               <PackagePlus className="w-3.5 h-3.5 text-[#008060]" />
@@ -549,7 +559,7 @@ export const BundlexEditor: React.FC = () => {
             {/* Liquid Code Button */}
             <button
               onClick={() => setIsCodeModalOpen(true)}
-              className="px-3 py-1.5 bg-[#F6F6F7] hover:bg-[#E4E5E7] text-[#202223] rounded-xl text-xs font-semibold flex items-center space-x-1.5 border border-[#D2D5D8] transition-all"
+              className="px-3 py-1.5 bg-[#F6F6F7] hover:bg-[#E4E5E7] text-[#202223] rounded-xl text-xs font-semibold flex items-center space-x-1.5 border border-[#D2D5D8] transition-all cursor-pointer"
             >
               <Code className="w-3.5 h-3.5 text-[#6D7175]" />
               <span>Theme Liquid</span>

@@ -176,7 +176,7 @@ app.get('/api/shopify/status', (req, res) => {
   });
 });
 
-// Sync real products from merchant's Shopify store
+// Sync real products from merchant's Shopify store (Strict Store Isolation - No Demo Data)
 app.post('/api/shopify/sync-products', async (req, res) => {
   try {
     const { shop, accessToken } = req.body;
@@ -185,14 +185,15 @@ app.post('/api/shopify/sync-products', async (req, res) => {
     }
 
     const cleanShop = String(shop).replace(/^https?:\/\//, '').replace(/\/.*$/, '').trim();
+    const activeToken = accessToken || installedShops[cleanShop]?.accessToken;
     
-    // 1. If accessToken provided, try Shopify Admin REST API
-    if (accessToken) {
+    // 1. If activeToken exists, try Shopify Admin REST API
+    if (activeToken) {
       try {
-        const adminUrl = `https://${cleanShop}/admin/api/2024-04/products.json?limit=50`;
+        const adminUrl = `https://${cleanShop}/admin/api/2024-04/products.json?limit=250`;
         const adminRes = await fetch(adminUrl, {
           headers: {
-            'X-Shopify-Access-Token': accessToken,
+            'X-Shopify-Access-Token': activeToken,
             'Content-Type': 'application/json',
           },
         });
@@ -202,8 +203,8 @@ app.post('/api/shopify/sync-products', async (req, res) => {
             id: `prod_${p.id}`,
             title: p.title,
             handle: p.handle,
-            vendor: p.vendor || 'Shopify Store',
-            category: p.product_type || 'Products',
+            vendor: p.vendor || cleanShop,
+            category: p.product_type || 'General',
             price: parseFloat(p.variants?.[0]?.price || '0'),
             compareAtPrice: p.variants?.[0]?.compare_at_price ? parseFloat(p.variants[0].compare_at_price) : undefined,
             image: p.image?.src || p.images?.[0]?.src || 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=600&auto=format&fit=crop&q=80',
@@ -225,8 +226,8 @@ app.post('/api/shopify/sync-products', async (req, res) => {
       }
     }
 
-    // 2. Try public Storefront products.json (works out-of-the-box on all live Shopify stores!)
-    const publicUrl = `https://${cleanShop}/products.json?limit=50`;
+    // 2. Try public Storefront products.json (works on all active live Shopify stores)
+    const publicUrl = `https://${cleanShop}/products.json?limit=250`;
     const publicRes = await fetch(publicUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BundlexShopifyApp/1.0',
@@ -236,7 +237,7 @@ app.post('/api/shopify/sync-products', async (req, res) => {
 
     if (!publicRes.ok) {
       return res.status(400).json({
-        error: `Could not fetch products from https://${cleanShop}. Please ensure the store URL is correct or provide a Storefront/Admin access token.`,
+        error: `Could not fetch products from https://${cleanShop}. Please ensure the store URL is correct and public, or provide an Admin Access Token with read_products scope.`,
       });
     }
 
@@ -245,8 +246,8 @@ app.post('/api/shopify/sync-products', async (req, res) => {
       id: `prod_${p.id}`,
       title: p.title,
       handle: p.handle,
-      vendor: p.vendor || 'Shopify Store',
-      category: p.product_type || 'Products',
+      vendor: p.vendor || cleanShop,
+      category: p.product_type || 'General',
       price: parseFloat(p.variants?.[0]?.price || '0'),
       compareAtPrice: p.variants?.[0]?.compare_at_price ? parseFloat(p.variants[0].compare_at_price) : undefined,
       image: p.images?.[0]?.src || 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=600&auto=format&fit=crop&q=80',
@@ -272,6 +273,351 @@ app.post('/api/shopify/sync-products', async (req, res) => {
     console.error('Error syncing store products:', error);
     res.status(500).json({ error: error.message || 'Failed to connect to Shopify store' });
   }
+});
+
+// -------------------------------------------------------------
+// 1.1 No-CLI Auto-Activation: ScriptTag & Theme Asset REST API
+// -------------------------------------------------------------
+// Automatically injects widget script tag to merchant store without any CLI
+app.post('/api/shopify/auto-activate-scripttag', async (req, res) => {
+  try {
+    const { shop, accessToken } = req.body;
+    if (!shop) {
+      return res.status(400).json({ error: 'Shop domain is required' });
+    }
+
+    const cleanShop = String(shop).replace(/^https?:\/\//, '').replace(/\/.*$/, '').trim();
+    const token = accessToken || installedShops[cleanShop]?.accessToken;
+    const host = process.env.APP_URL || `https://${req.headers.host}`;
+    const scriptSrc = `${host}/api/widget/bundlex-auto.js`;
+
+    if (!token) {
+      return res.status(400).json({
+        error: 'Shopify Access Token is required to automatically register ScriptTag via REST API.',
+        requiresAuth: true,
+        authUrl: `/api/auth/shopify?shop=${encodeURIComponent(cleanShop)}`,
+        manualScriptUrl: scriptSrc
+      });
+    }
+
+    // 1. Check existing script tags to prevent duplicate insertion
+    const listRes = await fetch(`https://${cleanShop}/admin/api/2024-04/script_tags.json`, {
+      headers: {
+        'X-Shopify-Access-Token': token,
+        'Content-Type': 'application/json',
+      }
+    });
+
+    if (!listRes.ok) {
+      const errText = await listRes.text();
+      return res.status(400).json({
+        error: `Shopify API rejected ScriptTag request: ${errText}`,
+        tip: 'Please verify the token has write_script_tags or write_themes permission.'
+      });
+    }
+
+    const listData = await listRes.json() as any;
+    const existing = (listData.script_tags || []).find((st: any) => st.src === scriptSrc);
+
+    if (existing) {
+      return res.json({
+        success: true,
+        alreadyActive: true,
+        message: `⚡ Bundlex ScriptTag is already active on ${cleanShop}!`,
+        scriptTag: existing
+      });
+    }
+
+    // 2. Create new ScriptTag on the live store
+    const createRes = await fetch(`https://${cleanShop}/admin/api/2024-04/script_tags.json`, {
+      method: 'POST',
+      headers: {
+        'X-Shopify-Access-Token': token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        script_tag: {
+          event: 'onload',
+          src: scriptSrc,
+          display_scope: 'online_store'
+        }
+      })
+    });
+
+    if (!createRes.ok) {
+      const errText = await createRes.text();
+      return res.status(400).json({
+        error: `Failed to create ScriptTag on Shopify: ${errText}`
+      });
+    }
+
+    const createData = await createRes.json() as any;
+    res.json({
+      success: true,
+      message: `🎉 Successfully auto-activated Bundlex on ${cleanShop} without CLI! The bundle widget is now live on product pages.`,
+      scriptTag: createData.script_tag
+    });
+  } catch (err: any) {
+    console.error('Auto-activate scripttag error:', err);
+    res.status(500).json({ error: err.message || 'Auto-activation failed' });
+  }
+});
+
+// 1.2 No-CLI Auto-Activation: Direct Theme Snippet Asset Injector
+app.post('/api/shopify/inject-theme-asset', async (req, res) => {
+  try {
+    const { shop, accessToken } = req.body;
+    if (!shop) {
+      return res.status(400).json({ error: 'Shop domain is required' });
+    }
+
+    const cleanShop = String(shop).replace(/^https?:\/\//, '').replace(/\/.*$/, '').trim();
+    const token = accessToken || installedShops[cleanShop]?.accessToken;
+
+    if (!token) {
+      return res.status(400).json({
+        error: 'Access Token required to inject snippet asset into active theme.',
+        requiresAuth: true
+      });
+    }
+
+    // Fetch active published theme
+    const themesRes = await fetch(`https://${cleanShop}/admin/api/2024-04/themes.json`, {
+      headers: {
+        'X-Shopify-Access-Token': token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!themesRes.ok) {
+      return res.status(400).json({ error: 'Could not access store themes. Check write_themes scope.' });
+    }
+
+    const themesData = await themesRes.json() as any;
+    const mainTheme = (themesData.themes || []).find((t: any) => t.role === 'main');
+
+    if (!mainTheme) {
+      return res.status(404).json({ error: 'No active published theme found on this store.' });
+    }
+
+    // Write snippets/bundlex-offer-block.liquid to active theme
+    const liquidSnippet = `{% comment %} Auto-injected by Bundlex Pro (No-CLI) {% endcomment %}
+<div id="bundlex-smart-bundle" data-store="{{ shop.permanent_domain }}" class="bundlex-widget-container" style="margin: 20px 0;"></div>
+<script src="${process.env.APP_URL || 'https://' + req.headers.host}/api/widget/bundlex-auto.js" async="async"></script>`;
+
+    const assetRes = await fetch(`https://${cleanShop}/admin/api/2024-04/themes/${mainTheme.id}/assets.json`, {
+      method: 'PUT',
+      headers: {
+        'X-Shopify-Access-Token': token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        asset: {
+          key: 'snippets/bundlex-offer-block.liquid',
+          value: liquidSnippet
+        }
+      })
+    });
+
+    if (!assetRes.ok) {
+      const errText = await assetRes.text();
+      return res.status(400).json({ error: `Theme asset injection error: ${errText}` });
+    }
+
+    res.json({
+      success: true,
+      themeId: mainTheme.id,
+      themeName: mainTheme.name,
+      message: `🎉 Successfully injected 'snippets/bundlex-offer-block.liquid' into active theme "${mainTheme.name}"!`
+    });
+  } catch (err: any) {
+    console.error('Theme injection error:', err);
+    res.status(500).json({ error: err.message || 'Theme injection failed' });
+  }
+});
+
+// Auto-attaching storefront script tag that works everywhere
+app.get(['/api/widget/bundlex-auto.js', '/api/embed/bundlex.js'], (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  const script = `
+(function() {
+  if (window.__BUNDLEX_LOADED__) return;
+  window.__BUNDLEX_LOADED__ = true;
+
+  console.log('[Bundlex Pro] Storefront Auto-Engine active on:', window.Shopify?.shop || location.hostname);
+
+  function mountBundlexWidget() {
+    // Check if on product page or if container exists
+    let container = document.getElementById('bundlex-smart-bundle') || document.getElementById('bundlex-smart-bundle-root');
+    
+    // Auto attach under product form if not explicitly present
+    if (!container && (location.pathname.includes('/products/') || window.meta?.page?.pageType === 'product')) {
+      const form = document.querySelector('form[action*="/cart/add"]') || 
+                   document.querySelector('.product-form') || 
+                   document.querySelector('.product__info-container');
+      if (form) {
+        container = document.createElement('div');
+        container.id = 'bundlex-smart-bundle';
+        container.style.margin = '20px 0';
+        form.parentNode.insertBefore(container, form.nextSibling);
+      }
+    }
+
+    if (!container) return;
+
+    // Render modern high-converting tier widget
+    const shop = container.getAttribute('data-store') || window.Shopify?.shop || location.hostname;
+    
+    // Fetch live product price or fallback
+    let unitPrice = 35.00;
+    const priceEl = document.querySelector('.price__regular .price-item--regular') || document.querySelector('.price');
+    if (priceEl) {
+      const matched = priceEl.textContent.replace(/[^0-9.]/g, '');
+      if (matched && !isNaN(parseFloat(matched))) unitPrice = parseFloat(matched);
+    }
+
+    const currencySymbol = (window.Shopify?.currency?.active === 'EUR' ? '€' : (window.Shopify?.currency?.active === 'GBP' ? '£' : '$'));
+
+    container.innerHTML = \`
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #ffffff; border: 1.5px solid #E1E3E5; border-radius: 14px; padding: 18px; margin: 18px 0; box-shadow: 0 4px 14px rgba(0,0,0,0.03); color: #202223;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid #F1F2F3;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="background:#DEF8EE; color:#008060; border-radius:6px; padding:3px 6px; font-size:12px; font-weight:bold;">⚡ BUNDLE OFFER</span>
+            <strong style="font-size:14px; font-weight:700;">Bundle & Save Big</strong>
+          </div>
+          <span style="font-size:11px; background:#DEF8EE; color:#008060; font-weight:700; padding:3px 8px; border-radius:999px;">Instant Discount</span>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <!-- 1 Pack -->
+          <div class="bx-tier" data-qty="1" data-disc="0" style="display:flex; justify-content:space-between; align-items:center; padding:12px 14px; border:1.5px solid #E1E3E5; border-radius:10px; cursor:pointer; background:#fff;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <input type="radio" name="bx_auto_tier" value="1" style="accent-color:#008060;">
+              <div>
+                <div style="font-size:13px; font-weight:700;">1x Single Unit</div>
+                <div style="font-size:11px; color:#6D7175;">Standard package</div>
+              </div>
+            </div>
+            <strong style="font-size:14px;">\${currencySymbol}\${unitPrice.toFixed(2)}</strong>
+          </div>
+
+          <!-- 2 Pack Popular -->
+          <div class="bx-tier bx-selected" data-qty="2" data-disc="15" style="position:relative; display:flex; justify-content:space-between; align-items:center; padding:12px 14px; border:2px solid #008060; border-radius:10px; cursor:pointer; background:#FAFDFB;">
+            <span style="position:absolute; top:-9px; right:12px; background:#008060; color:#fff; font-size:9px; font-weight:800; padding:2px 8px; border-radius:999px;">MOST POPULAR</span>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <input type="radio" name="bx_auto_tier" value="2" checked style="accent-color:#008060;">
+              <div>
+                <div style="font-size:13px; font-weight:700;">2x Pack (Duo Bundle)</div>
+                <div style="font-size:11px; color:#008060; font-weight:600;">Save 15% OFF</div>
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <strong style="font-size:14px; color:#008060;">\${currencySymbol}\${(unitPrice * 2 * 0.85).toFixed(2)}</strong>
+              <div style="font-size:11px; text-decoration:line-through; color:#8C9196;">\${currencySymbol}\${(unitPrice * 2).toFixed(2)}</div>
+            </div>
+          </div>
+
+          <!-- 3 Pack Best Value -->
+          <div class="bx-tier" data-qty="3" data-disc="25" style="position:relative; display:flex; justify-content:space-between; align-items:center; padding:12px 14px; border:1.5px solid #E1E3E5; border-radius:10px; cursor:pointer; background:#fff;">
+            <span style="position:absolute; top:-9px; right:12px; background:#202223; color:#fff; font-size:9px; font-weight:800; padding:2px 8px; border-radius:999px;">BEST VALUE</span>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <input type="radio" name="bx_auto_tier" value="3" style="accent-color:#008060;">
+              <div>
+                <div style="font-size:13px; font-weight:700;">3x Pack (Family Bundle)</div>
+                <div style="font-size:11px; color:#008060; font-weight:600;">Save 25% + Free Shipping</div>
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <strong style="font-size:14px; color:#008060;">\${currencySymbol}\${(unitPrice * 3 * 0.75).toFixed(2)}</strong>
+              <div style="font-size:11px; text-decoration:line-through; color:#8C9196;">\${currencySymbol}\${(unitPrice * 3).toFixed(2)}</div>
+            </div>
+          </div>
+        </div>
+
+        <button id="bx-auto-add-btn" type="button" style="width:100%; margin-top:14px; padding:13px; background:#008060; color:#fff; border:none; border-radius:10px; font-weight:700; font-size:14px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;">
+          🛒 Add Bundle to Cart (Save 15%)
+        </button>
+      </div>
+    \`;
+
+    let activeQty = 2;
+    let activeDisc = 15;
+
+    container.querySelectorAll('.bx-tier').forEach(tier => {
+      tier.addEventListener('click', function() {
+        container.querySelectorAll('.bx-tier').forEach(t => {
+          t.style.borderColor = '#E1E3E5';
+          t.style.background = '#fff';
+          t.querySelector('input').checked = false;
+        });
+        this.style.borderColor = '#008060';
+        this.style.background = '#FAFDFB';
+        this.querySelector('input').checked = true;
+
+        activeQty = parseInt(this.getAttribute('data-qty'));
+        activeDisc = parseInt(this.getAttribute('data-disc'));
+
+        const btn = document.getElementById('bx-auto-add-btn');
+        if (btn) {
+          btn.innerHTML = activeDisc > 0 ? \`🛒 Add Bundle to Cart (Save \${activeDisc}%)\` : '🛒 Add to Cart';
+        }
+      });
+    });
+
+    const addBtn = document.getElementById('bx-auto-add-btn');
+    if (addBtn) {
+      addBtn.addEventListener('click', function() {
+        this.disabled = true;
+        this.textContent = 'Adding Bundle...';
+
+        // Find product variant from form
+        const variantInput = document.querySelector('input[name="id"]') || document.querySelector('select[name="id"]');
+        const varId = variantInput ? variantInput.value : '';
+
+        if (!varId) {
+          // If no variant input, submit standard form
+          const mainForm = document.querySelector('form[action*="/cart/add"]');
+          if (mainForm) mainForm.submit();
+          return;
+        }
+
+        fetch('/cart/add.js', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: [{
+              id: varId,
+              quantity: activeQty,
+              properties: {
+                'Bundle Type': activeQty + 'x Bundle',
+                'Bundle Discount': activeDisc > 0 ? activeDisc + '% OFF' : 'Standard'
+              }
+            }]
+          })
+        }).then(r => r.json()).then(data => {
+          addBtn.textContent = '✓ Added to Cart!';
+          addBtn.style.background = '#202223';
+          setTimeout(() => {
+            window.location.href = '/cart';
+          }, 600);
+        }).catch(() => {
+          addBtn.disabled = false;
+          addBtn.textContent = '🛒 Add Bundle to Cart';
+        });
+      });
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mountBundlexWidget);
+  } else {
+    mountBundlexWidget();
+  }
+})();
+  `;
+  res.send(script);
 });
 
 // -------------------------------------------------------------
